@@ -1,69 +1,22 @@
-.eqv LED_MATRIX_0_BASE   0xF0000004   # if test not succesfull change to 0xF0000000
-.eqv LED_MATRIX_WIDTH    35
-.eqv LED_MATRIX_HEIGHT   25
-
-# direcciones del D-pad según Ripes
-.eqv D_PAD_0_BASE   0xf0000dac
-.eqv D_PAD_0_UP     0xf0000dac
-.eqv D_PAD_0_DOWN   0xf0000db0
-.eqv D_PAD_0_LEFT   0xf0000db4
-.eqv D_PAD_0_RIGHT  0xf0000db8
-
-.data
-# colores en formato 0x00RRGGBB
-WALL_COLOR:   .word 0x00000000    # negro
-PATH_COLOR:   .word 0x00FFFFFF    # blanco
-PLAYER_COLOR: .word 0x0000FF00    # verde
-EXIT_COLOR:   .word 0x00FF0000    # rojo
-WIN_COLOR:    .word 0x0000FF00    # verde
-
-# laberinto 25 x 35 = 875 celdas
-# # = pared
-# . = pasillo
-maze:
-.ascii "###################################"
-.ascii "#.................................#"
-.ascii "#################################.#"
-.ascii "#.................................#"
-.ascii "#.#################################"
-.ascii "#.................................#"
-.ascii "#################################.#"
-.ascii "#.................................#"
-.ascii "#.#################################"
-.ascii "#.................................#"
-.ascii "#################################.#"
-.ascii "#.................................#"
-.ascii "#.#################################"
-.ascii "#.................................#"
-.ascii "#################################.#"
-.ascii "#.................................#"
-.ascii "#.#################################"
-.ascii "#.................................#"
-.ascii "#################################.#"
-.ascii "#.................................#"
-.ascii "#.#################################"
-.ascii "#.................................#"
-.ascii "#################################.#"
-.ascii "#.................................#"
-.ascii "###################################"
-
-player_x: .word 1
-player_y: .word 1
-
-exit_x:   .word 33
-exit_y:   .word 23
-
 .text
 .globl main
 
 main:
+    # jugador inicial
+    li s0, 1          # player_x
+    li s1, 1          # player_y
+
+    # salida
+    li s2, 33         # exit_x
+    li s3, 23         # exit_y
+
     jal ra, draw_maze
     jal ra, draw_exit
     jal ra, draw_player
 
 game_loop:
     jal ra, read_dpad
-    beqz a0, game_loop
+    beq a0, x0, game_loop
 
     li t0, 1
     beq a0, t0, move_up
@@ -79,81 +32,166 @@ move_up:
     li a0, 0
     li a1, -1
     jal ra, try_move
-    jal ra, wait_release
+    jal ra, short_delay
     j game_loop
 
 move_down:
     li a0, 0
     li a1, 1
     jal ra, try_move
-    jal ra, wait_release
+    jal ra, short_delay
     j game_loop
 
 move_left:
     li a0, -1
     li a1, 0
     jal ra, try_move
-    jal ra, wait_release
+    jal ra, short_delay
     j game_loop
 
 move_right:
     li a0, 1
     li a1, 0
     jal ra, try_move
-    jal ra, wait_release
+    jal ra, short_delay
     j game_loop
 
 ##################################################
 # draw_maze
-# corre las 25x35 celdas del mapa y dibuja
 ##################################################
 draw_maze:
-    addi sp, sp, -4
-    sw ra, 0(sp)
+    addi sp, sp, -12
+    sw ra, 8(sp)
+    sw s4, 4(sp)
+    sw s5, 0(sp)
 
-    li t0, 0                  # y = 0
-draw_maze_row_loop:
-    li t1, LED_MATRIX_HEIGHT
-    bge t0, t1, draw_maze_done
+    li s4, 0                  # y
+maze_row_loop:
+    li t0, 25
+    bge s4, t0, maze_done
 
-    li t2, 0                  # x = 0
-draw_maze_col_loop:
-    li t3, LED_MATRIX_WIDTH
-    bge t2, t3, draw_maze_next_row
+    li s5, 0                  # x
+maze_col_loop:
+    li t1, 35
+    bge s5, t1, maze_next_row
 
-    mv a0, t2
-    mv a1, t0
-    jal ra, get_maze_cell     # devuelve carácter en a0
+    mv a0, s5
+    mv a1, s4
+    jal ra, is_wall
 
-    li t4, '#'
-    beq a0, t4, draw_wall
-
-    # pasillo
-    mv a0, t2
-    mv a1, t0
-    la t5, PATH_COLOR
-    lw a2, 0(t5)
-    jal ra, draw_pixel
-    j draw_maze_next_col
+    beq a0, x0, draw_path
 
 draw_wall:
-    mv a0, t2
-    mv a1, t0
-    la t5, WALL_COLOR
-    lw a2, 0(t5)
+    mv a0, s5
+    mv a1, s4
+    li a2, 255                # azul = 0x000000FF
+    jal ra, draw_pixel
+    j maze_next_col
+
+draw_path:
+    mv a0, s5
+    mv a1, s4
+    lui a2, 0x01000
+    addi a2, a2, -1           # blanco = 0x00FFFFFF
     jal ra, draw_pixel
 
-draw_maze_next_col:
-    addi t2, t2, 1
-    j draw_maze_col_loop
+maze_next_col:
+    addi s5, s5, 1
+    j maze_col_loop
 
-draw_maze_next_row:
-    addi t0, t0, 1
-    j draw_maze_row_loop
+maze_next_row:
+    addi s4, s4, 1
+    j maze_row_loop
 
-draw_maze_done:
-    lw ra, 0(sp)
-    addi sp, sp, 4
+maze_done:
+    lw ra, 8(sp)
+    lw s4, 4(sp)
+    lw s5, 0(sp)
+    addi sp, sp, 12
+    ret
+
+##################################################
+# is_wall
+# entrada: a0 = x, a1 = y
+# salida:  a0 = 1 si es pared, 0 si es pasillo
+#
+# laberinto tipo serpiente:
+# bordes cerrados
+# columnas en x = 4,8,12,16,20,24,28,32
+# con huecos alternando entre y=2 y y=22
+##################################################
+is_wall:
+    # bordes
+    beq a0, x0, wall_yes
+    beq a1, x0, wall_yes
+
+    li t0, 34
+    beq a0, t0, wall_yes
+    li t0, 24
+    beq a1, t0, wall_yes
+
+    # x = 4, gap en y = 2
+    li t0, 4
+    bne a0, t0, check_x8
+    li t1, 2
+    beq a1, t1, wall_no
+    j wall_yes
+
+check_x8:
+    li t0, 8
+    bne a0, t0, check_x12
+    li t1, 22
+    beq a1, t1, wall_no
+    j wall_yes
+
+check_x12:
+    li t0, 12
+    bne a0, t0, check_x16
+    li t1, 2
+    beq a1, t1, wall_no
+    j wall_yes
+
+check_x16:
+    li t0, 16
+    bne a0, t0, check_x20
+    li t1, 22
+    beq a1, t1, wall_no
+    j wall_yes
+
+check_x20:
+    li t0, 20
+    bne a0, t0, check_x24
+    li t1, 2
+    beq a1, t1, wall_no
+    j wall_yes
+
+check_x24:
+    li t0, 24
+    bne a0, t0, check_x28
+    li t1, 22
+    beq a1, t1, wall_no
+    j wall_yes
+
+check_x28:
+    li t0, 28
+    bne a0, t0, check_x32
+    li t1, 2
+    beq a1, t1, wall_no
+    j wall_yes
+
+check_x32:
+    li t0, 32
+    bne a0, t0, wall_no
+    li t1, 22
+    beq a1, t1, wall_no
+    j wall_yes
+
+wall_no:
+    li a0, 0
+    ret
+
+wall_yes:
+    li a0, 1
     ret
 
 ##################################################
@@ -163,12 +201,10 @@ draw_player:
     addi sp, sp, -4
     sw ra, 0(sp)
 
-    la t0, player_x
-    lw a0, 0(t0)
-    la t1, player_y
-    lw a1, 0(t1)
-    la t2, PLAYER_COLOR
-    lw a2, 0(t2)
+    mv a0, s0
+    mv a1, s1
+    lui a2, 0x10
+    addi a2, a2, -256         # verde = 0x0000FF00
     jal ra, draw_pixel
 
     lw ra, 0(sp)
@@ -182,13 +218,32 @@ draw_exit:
     addi sp, sp, -4
     sw ra, 0(sp)
 
-    la t0, exit_x
-    lw a0, 0(t0)
-    la t1, exit_y
-    lw a1, 0(t1)
-    la t2, EXIT_COLOR
-    lw a2, 0(t2)
+    mv a0, s2
+    mv a1, s3
+    lui a2, 0xFF0             # rojo = 0x00FF0000
     jal ra, draw_pixel
+
+    lw ra, 0(sp)
+    addi sp, sp, 4
+    ret
+
+##################################################
+# draw_pixel
+# entrada: a0 = x, a1 = y, a2 = color
+##################################################
+draw_pixel:
+    addi sp, sp, -4
+    sw ra, 0(sp)
+
+    li t0, 35
+    mul t1, a1, t0
+    add t1, t1, a0
+    slli t1, t1, 2
+
+    lui t0, 0xF0000
+    addi t0, t0, 16           # 0xF0000010
+    add t0, t0, t1
+    sw a2, 0(t0)
 
     lw ra, 0(sp)
     addi sp, sp, 4
@@ -196,233 +251,163 @@ draw_exit:
 
 ##################################################
 # try_move
-# entrada:
-#   a0 = dx
-#   a1 = dy
+# entrada: a0 = dx, a1 = dy
 ##################################################
 try_move:
-    addi sp, sp, -28
-    sw ra, 24(sp)
-    sw s0, 20(sp)
-    sw s1, 16(sp)
-    sw s2, 12(sp)
-    sw s3, 8(sp)
-    sw s4, 4(sp)
-    sw s5, 0(sp)
+    addi sp, sp, -20
+    sw ra, 16(sp)
+    sw s4, 12(sp)
+    sw s5, 8(sp)
+    sw s6, 4(sp)
+    sw s7, 0(sp)
 
-    mv s2, a0                 # dx
-    mv s3, a1                 # dy
+    add s4, s0, a0            # new x
+    add s5, s1, a1            # new y
 
-    la t0, player_x
-    lw s0, 0(t0)              # old x
-    la t1, player_y
-    lw s1, 0(t1)              # old y
+    blt s4, x0, move_done
+    blt s5, x0, move_done
 
-    add s4, s0, s2            # new x
-    add s5, s1, s3            # new y
+    li t0, 35
+    bge s4, t0, move_done
+    li t0, 25
+    bge s5, t0, move_done
 
-    # Seguridad extra: verificar límites
-    bltz s4, try_move_done
-    bltz s5, try_move_done
-
-    li t2, LED_MATRIX_WIDTH
-    bge s4, t2, try_move_done
-
-    li t2, LED_MATRIX_HEIGHT
-    bge s5, t2, try_move_done
-
-    # Revisar si nuevo lugar es pared
     mv a0, s4
     mv a1, s5
-    jal ra, get_maze_cell
+    jal ra, is_wall
+    bne a0, x0, move_done
 
-    li t3, '#'
-    beq a0, t3, try_move_done
-
-    # return posición vieja como pasillo
+    # borrar posición vieja
     mv a0, s0
     mv a1, s1
-    la t4, PATH_COLOR
-    lw a2, 0(t4)
+    lui a2, 0x01000
+    addi a2, a2, -1
     jal ra, draw_pixel
 
-    # si la posición vieja era la salida, redraw salida
-    la t5, exit_x
-    lw t6, 0(t5)
-    bne s0, t6, skip_redraw_exit_old
-    la t5, exit_y
-    lw t6, 0(t5)
-    bne s1, t6, skip_redraw_exit_old
+    # si vieja posición era salida, redibujar salida
+    bne s0, s2, skip_old_exit
+    bne s1, s3, skip_old_exit
     jal ra, draw_exit
 
-skip_redraw_exit_old:
-    # actualizar posición del jugador
-    la t0, player_x
-    sw s4, 0(t0)
-    la t1, player_y
-    sw s5, 0(t1)
-
-    # dibujar jugador nuevo
-    mv a0, s4
-    mv a1, s5
-    la t4, PLAYER_COLOR
-    lw a2, 0(t4)
-    jal ra, draw_pixel
+skip_old_exit:
+    mv s0, s4
+    mv s1, s5
+    jal ra, draw_player
 
     # verificar win
-    la t5, exit_x
-    lw t6, 0(t5)
-    bne s4, t6, try_move_done
-
-    la t5, exit_y
-    lw t6, 0(t5)
-    bne s5, t6, try_move_done
-
+    bne s0, s2, move_done
+    bne s1, s3, move_done
     jal ra, fill_screen_green
 
-try_move_done:
-    lw ra, 24(sp)
-    lw s0, 20(sp)
-    lw s1, 16(sp)
-    lw s2, 12(sp)
-    lw s3, 8(sp)
-    lw s4, 4(sp)
-    lw s5, 0(sp)
-    addi sp, sp, 28
-    ret
-
-##################################################
-# get_maze_cell
-# entrada:
-#   a0 = x
-#   a1 = y
-# salida:
-#   a0 = carácter en maze[y][x]
-##################################################
-get_maze_cell:
-    # index = y*35 + x = y*32 + y*2 + y + x
-    slli t0, a1, 5            # y*32
-    slli t1, a1, 1            # y*2
-    add t0, t0, t1            # y*34
-    add t0, t0, a1            # y*35
-    add t0, t0, a0            # y*35 + x
-
-    la t1, maze
-    add t1, t1, t0
-    lb a0, 0(t1)
-    ret
-
-##################################################
-# draw_pixel
-# entrada:
-#   a0 = x
-#   a1 = y
-#   a2 = color
-##################################################
-draw_pixel:
-    # offset = ((y * 35) + x) * 4
-    slli t0, a1, 5            # y*32
-    slli t1, a1, 1            # y*2
-    add t0, t0, t1            # y*34
-    add t0, t0, a1            # y*35
-    add t0, t0, a0            # y*35 + x
-    slli t0, t0, 2            # *4
-
-    li t1, LED_MATRIX_0_BASE
-    add t1, t1, t0
-    sw a2, 0(t1)
+move_done:
+    lw ra, 16(sp)
+    lw s4, 12(sp)
+    lw s5, 8(sp)
+    lw s6, 4(sp)
+    lw s7, 0(sp)
+    addi sp, sp, 20
     ret
 
 ##################################################
 # read_dpad
 # salida:
-#   a0 = 0 nada
-#   a0 = 1 up
-#   a0 = 2 down
-#   a0 = 3 left
-#   a0 = 4 right
+# a0 = 0 nada
+# a0 = 1 up
+# a0 = 2 down
+# a0 = 3 left
+# a0 = 4 right
 ##################################################
 read_dpad:
-    li t0, D_PAD_0_UP
+    lui t0, 0xF0000
     lw t1, 0(t0)
-    bnez t1, dpad_up
+    andi t1, t1, 1
+    bne t1, x0, rd_up
 
-    li t0, D_PAD_0_DOWN
+    lui t0, 0xF0000
+    addi t0, t0, 4
     lw t1, 0(t0)
-    bnez t1, dpad_down
+    andi t1, t1, 1
+    bne t1, x0, rd_down
 
-    li t0, D_PAD_0_LEFT
+    lui t0, 0xF0000
+    addi t0, t0, 8
     lw t1, 0(t0)
-    bnez t1, dpad_left
+    andi t1, t1, 1
+    bne t1, x0, rd_left
 
-    li t0, D_PAD_0_RIGHT
+    lui t0, 0xF0000
+    addi t0, t0, 12
     lw t1, 0(t0)
-    bnez t1, dpad_right
+    andi t1, t1, 1
+    bne t1, x0, rd_right
 
     li a0, 0
     ret
 
-dpad_up:
+rd_up:
     li a0, 1
     ret
-
-dpad_down:
+rd_down:
     li a0, 2
     ret
-
-dpad_left:
+rd_left:
     li a0, 3
     ret
-
-dpad_right:
+rd_right:
     li a0, 4
     ret
 
 ##################################################
-# wait_release
-# espera a que se suelte el botón para evitar
-# movimiento demasiado rápido por una sola presión
+# short_delay
 ##################################################
-wait_release:
-wait_release_loop:
-    jal ra, read_dpad
-    bnez a0, wait_release_loop
+short_delay:
+    li t0, 40
+sd_outer:
+    li t1, 200
+sd_inner:
+    addi t1, t1, -1
+    bne t1, x0, sd_inner
+    addi t0, t0, -1
+    bne t0, x0, sd_outer
     ret
 
 ##################################################
 # fill_screen_green
-# pinta toda la pantalla verde y se queda ahí
 ##################################################
 fill_screen_green:
-    addi sp, sp, -4
-    sw ra, 0(sp)
+    addi sp, sp, -12
+    sw ra, 8(sp)
+    sw s4, 4(sp)
+    sw s5, 0(sp)
 
-    li t0, 0                  # y
-fill_row_loop:
-    li t1, LED_MATRIX_HEIGHT
-    bge t0, t1, fill_done
+    li s4, 0
+fg_row:
+    li t0, 25
+    bge s4, t0, fg_done
 
-    li t2, 0                  # x
-fill_col_loop:
-    li t3, LED_MATRIX_WIDTH
-    bge t2, t3, fill_next_row
+    li s5, 0
+fg_col:
+    li t1, 35
+    bge s5, t1, fg_next_row
 
-    mv a0, t2
-    mv a1, t0
-    la t4, WIN_COLOR
-    lw a2, 0(t4)
+    mv a0, s5
+    mv a1, s4
+    lui a2, 0x10
+    addi a2, a2, -256
     jal ra, draw_pixel
 
-    addi t2, t2, 1
-    j fill_col_loop
+    addi s5, s5, 1
+    j fg_col
 
-fill_next_row:
-    addi t0, t0, 1
-    j fill_row_loop
+fg_next_row:
+    addi s4, s4, 1
+    j fg_row
 
-fill_done:
-    lw ra, 0(sp)
-    addi sp, sp, 4
+fg_done:
+    lw ra, 8(sp)
+    lw s4, 4(sp)
+    lw s5, 0(sp)
+    addi sp, sp, 12
 
-win_forever:
-    j win_forever
+fg_forever:
+    j fg_forever
